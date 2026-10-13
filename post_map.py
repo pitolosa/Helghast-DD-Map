@@ -106,9 +106,12 @@ def grab_map():
                 document.querySelectorAll('iframe, video').forEach(e => e.remove());
             }"""
         )
-        block.scroll_into_view_if_needed()
+        # Crop to the square grid only (no legend strip): Discord caps image
+        # height in chat, so a square map is shown larger than a tall one.
+        grid = block.locator(".grid-wrapper").first
+        grid.scroll_into_view_if_needed()
         page.wait_for_timeout(500)
-        block.screenshot(path=str(IMAGE_FILE))
+        grid.screenshot(path=str(IMAGE_FILE))
         browser.close()
     return updated, pois, loot
 
@@ -205,23 +208,27 @@ def build_loot_embeds(loot, pois):
     return embeds
 
 
-def post_loot(embeds):
-    """Send loot embeds as follow-up messages (one embed per message keeps
-    every message well under Discord's size limits)."""
-    webhook = os.environ["DISCORD_WEBHOOK_URL"].strip()
+def _embed_chars(e):
+    """Characters Discord counts toward its 6,000-per-message embed limit."""
+    n = len(e.get("title", "")) + len(e.get("description", ""))
+    n += len(e.get("footer", {}).get("text", ""))
+    n += sum(len(f["name"]) + len(f["value"]) for f in e.get("fields", []))
+    return n
+
+
+def split_embeds(embeds, limit=5800, max_per_msg=10):
+    """Group embeds into as few messages as Discord allows."""
+    groups, cur, size = [], [], 0
     for e in embeds:
-        r = requests.post(
-            webhook,
-            params={"wait": "true"},
-            json={
-                "username": "Deep Desert Scout",
-                "embeds": [e],
-                "allowed_mentions": {"parse": []},
-            },
-            timeout=60,
-        )
-        print(f"Loot post: Discord replied {r.status_code}")
-        r.raise_for_status()
+        n = _embed_chars(e)
+        if cur and (size + n > limit or len(cur) == max_per_msg):
+            groups.append(cur)
+            cur, size = [], 0
+        cur.append(e)
+        size += n
+    if cur:
+        groups.append(cur)
+    return groups
 
 
 def build_message(updated, pois):
@@ -238,21 +245,23 @@ def build_message(updated, pois):
     return "\n".join(lines)
 
 
-def post_to_discord(message):
+def post_to_discord(message, embeds=()):
+    """One message: location list + map image + loot cards. Only if the loot
+    cards are too big for one message does the overflow go in a follow-up."""
     webhook = os.environ["DISCORD_WEBHOOK_URL"].strip()
     image_bytes = IMAGE_FILE.read_bytes()
     print(f"Screenshot size: {len(image_bytes)} bytes")
     if len(image_bytes) < 5_000:
         raise RuntimeError("Screenshot looks empty — not posting.")
 
+    groups = split_embeds(list(embeds)) or [[]]
     payload = {
         "username": "Deep Desert Scout",
-        "content": message,
+        "content": message[:2000],
         "allowed_mentions": {"parse": []},
-        # Declare the file explicitly and show it as the embed image,
-        # so Discord can't drop it.
-        # Declared as a plain attachment (not inside an embed card) so
-        # Discord shows it at full size instead of shrinking it.
+        "embeds": groups[0],
+        # Plain attachment (not inside an embed card) so Discord shows it
+        # as large as it can.
         "attachments": [{"id": 0, "filename": "deep_desert_map.png"}],
     }
     r = requests.post(
@@ -269,6 +278,16 @@ def post_to_discord(message):
     if not sent.get("attachments"):
         raise RuntimeError(f"Discord accepted the post but dropped the image: {r.text[:500]}")
 
+    for extra in groups[1:]:  # only used if loot is unusually long
+        r2 = requests.post(
+            webhook,
+            params={"wait": "true"},
+            json={"username": "Deep Desert Scout", "embeds": extra, "allowed_mentions": {"parse": []}},
+            timeout=60,
+        )
+        print(f"Overflow loot post: Discord replied {r2.status_code}")
+        r2.raise_for_status()
+
 
 def main():
     updated, pois, loot = grab_map()
@@ -283,17 +302,17 @@ def main():
         print("No map icons found — page layout may have changed. Not posting.")
         return 1
 
-    post_to_discord(build_message(updated, pois))
-    STATE_FILE.write_text(updated + "\n")
-
     # Loot tables are a bonus: if Method changes that part of the page,
-    # still count the map as posted instead of failing the whole run.
+    # still post the map instead of failing the whole run.
     try:
         embeds = build_loot_embeds(loot, pois)
-        print(f"Loot sections found: {len(loot)}, embeds to post: {len(embeds)}")
-        post_loot(embeds)
+        print(f"Loot sections found: {len(loot)}, loot cards: {len(embeds)}")
     except Exception as e:  # noqa: BLE001
         print(f"Loot tables skipped: {e}")
+        embeds = []
+
+    post_to_discord(build_message(updated, pois), embeds)
+    STATE_FILE.write_text(updated + "\n")
     print("Posted to Discord.")
     return 0
 
