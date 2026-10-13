@@ -49,10 +49,17 @@ def grab_map():
         page.wait_for_selector("#multiplayer .grid-wrapper .main-cell", timeout=60_000)
         page.wait_for_timeout(3000)  # let the icons finish loading
 
-        block = page.locator("#multiplayer .desert-content-block").first
         updated = (
-            block.locator("p", has_text="Updated for").first.inner_text().strip()
+            page.locator("#multiplayer p", has_text="Updated for")
+            .first.inner_text()
+            .strip()
         )
+        # The page has several "desert-content-block" sections; use the one
+        # that actually contains the map grid (grid + icon legend).
+        block = page.locator(
+            "#multiplayer .desert-content-block",
+            has=page.locator(".grid-wrapper"),
+        ).first
 
         # Read every icon on the grid: data-main-cell="I:1" -> square "I1"
         cells = page.eval_on_selector_all(
