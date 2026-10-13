@@ -40,6 +40,7 @@ def grab_map():
         browser = p.chromium.launch()
         page = browser.new_page(
             viewport={"width": 1400, "height": 2200},
+            device_scale_factor=2,  # 2x resolution: sharp when zoomed in Discord
             user_agent=(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                 "(KHTML, like Gecko) Chrome/129.0 Safari/537.36"
@@ -78,6 +79,23 @@ def grab_map():
                 if square not in pois[label]:
                     pois[label].append(square)
 
+        # PvE loot tables: one section per source (All Schematics, Downed
+        # Ships, each Testing Station, each Wreck), each with tier-tagged tiles.
+        # The page holds a PvE set and a PvP set (data-loot="pve" / "pvp").
+        loot = page.eval_on_selector_all(
+            "#multiplayer .loot-tables-wrapper .loot-section-block",
+            """secs => secs.map(s => ({
+                mode: (s.closest('.loot-tables-wrapper')?.getAttribute('data-loot') || '').toUpperCase(),
+                title: (s.querySelector('.loot-section-title')?.textContent || '').trim(),
+                items: [...s.querySelectorAll('.loot-tile')].map(t => ({
+                    tier: ([...t.classList].find(c => /-tier$/.test(c)) || '')
+                            .replace('-tier', '').toUpperCase(),
+                    name: (t.querySelector('.loot-name')?.textContent || '').trim(),
+                    chance: (t.querySelector('.loot-drop-chance')?.textContent || '').trim(),
+                }))
+            }))""",
+        )
+
         # Hide sticky ads, video players and cookie bars so they can't cover the map
         page.evaluate(
             """() => {
@@ -92,7 +110,118 @@ def grab_map():
         page.wait_for_timeout(500)
         block.screenshot(path=str(IMAGE_FILE))
         browser.close()
-    return updated, pois
+    return updated, pois, loot
+
+
+TOP_TIERS = ("S", "A")
+TIER_ICON = {"S": "🟥", "A": "🟧", "B": "🟨", "C": "🟩"}
+
+
+def _clip(text, limit):
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _source_label(title, pois):
+    """Method lists shared tables under one example location; give them a
+    group name plus the squares from this week's map."""
+    t = title.lower()
+    if t.startswith("downed ship"):
+        return "✈️ Downed ships"
+    if t.startswith("testing station"):
+        squares = [s for s in pois.get(ICON_LABELS["testing-station"], []) if not s.startswith("A")]
+        return "🧪 Testing stations" + (f" ({', '.join(sorted(squares))})" if squares else "")
+    if t.startswith("wreck ("):
+        name = title.split(" - ", 1)[1] if " - " in title else "Wrecks"
+        squares = [s for s in pois.get(ICON_LABELS["shipwreck"], []) if not s.startswith("A")]
+        return f"🚢 Wrecks – {name}" + (f" ({', '.join(sorted(squares))})" if squares else "")
+    return title
+
+
+def build_loot_embeds(loot, pois):
+    """Turn Method's loot sections into Discord embeds (S and A tiers only),
+    one schematics overview + one 'where to farm' card per mode (PvE, PvP)."""
+    embeds = []
+    modes = [m for m in ("PVE", "PVP") if any(s["mode"] == m for s in loot)] or [""]
+
+    for mode in modes:
+        secs = [s for s in loot if s["mode"] == mode]
+        label = {"PVE": "PvE", "PVP": "PvP"}.get(mode, "")
+        color = 0xF1C40F if mode != "PVP" else 0x992D22
+
+        # 1) This week's best schematics (from the "All Schematics" section)
+        overview = next((s for s in secs if s["title"].lower() == "all schematics"), None)
+        if overview:
+            lines = []
+            for tier in TOP_TIERS:
+                names = sorted({i["name"] for i in overview["items"] if i["tier"] == tier and i["name"]})
+                if names:
+                    lines.append(f"{TIER_ICON[tier]} **{tier}-tier:** " + ", ".join(names))
+            counts = defaultdict(int)
+            for i in overview["items"]:
+                if i["tier"] in TIER_ICON:
+                    counts[i["tier"]] += 1
+            summary = " · ".join(f"{t}: {counts[t]}" for t in ("S", "A", "B", "C") if counts[t])
+            if lines:
+                embeds.append({
+                    "title": f"📜 This week's unique schematics — {label}",
+                    "description": _clip("\n".join(lines) + f"\n\n*Total by tier — {summary}*", 4000),
+                    "color": color,
+                })
+
+        # 2) Where to farm: S/A drops per source, with drop chance.
+        #    Row A (Mk5) tables have no S/A tiers, so they drop out here.
+        fields = []
+        for sec in secs:
+            if not sec["title"] or sec["title"].lower() == "all schematics":
+                continue
+            top = [i for i in sec["items"] if i["tier"] in TOP_TIERS and i["name"]]
+            if not top:
+                continue
+            def _pct(c):
+                c = c.replace("%", "").strip()
+                return 0.5 if c.startswith("<") else float(c or 0)
+
+            # Best tier first, then highest drop chance
+            top.sort(key=lambda i: (TOP_TIERS.index(i["tier"]), -_pct(i["chance"]), i["name"]))
+            value = "\n".join(
+                f"{TIER_ICON[i['tier']]} {i['name']}" + (f" — {i['chance']}" if i["chance"] else "")
+                for i in top
+            )
+            fields.append({
+                "name": _clip(_source_label(sec["title"], pois), 250),
+                "value": _clip(value, 1020),
+                "inline": False,
+            })
+        if fields:
+            embeds.append({
+                "title": f"🎯 Where to farm — {label} (S & A tier drop chances)",
+                "fields": fields[:25],
+                "color": color,
+            })
+
+    if embeds:
+        embeds[-1]["footer"] = {"text": "B & C tiers and Row A (Mk5) tables: full list on Method.gg"}
+        embeds[-1]["url"] = MAP_URL
+    return embeds
+
+
+def post_loot(embeds):
+    """Send loot embeds as follow-up messages (one embed per message keeps
+    every message well under Discord's size limits)."""
+    webhook = os.environ["DISCORD_WEBHOOK_URL"].strip()
+    for e in embeds:
+        r = requests.post(
+            webhook,
+            params={"wait": "true"},
+            json={
+                "username": "Deep Desert Scout",
+                "embeds": [e],
+                "allowed_mentions": {"parse": []},
+            },
+            timeout=60,
+        )
+        print(f"Loot post: Discord replied {r.status_code}")
+        r.raise_for_status()
 
 
 def build_message(updated, pois):
@@ -122,15 +251,9 @@ def post_to_discord(message):
         "allowed_mentions": {"parse": []},
         # Declare the file explicitly and show it as the embed image,
         # so Discord can't drop it.
+        # Declared as a plain attachment (not inside an embed card) so
+        # Discord shows it at full size instead of shrinking it.
         "attachments": [{"id": 0, "filename": "deep_desert_map.png"}],
-        "embeds": [
-            {
-                "title": "Deep Desert — this week's map",
-                "url": MAP_URL,
-                "color": 0xE74C3C,
-                "image": {"url": "attachment://deep_desert_map.png"},
-            }
-        ],
     }
     r = requests.post(
         webhook,
@@ -143,14 +266,12 @@ def post_to_discord(message):
     r.raise_for_status()
     sent = r.json()
     print(f"Attachments on posted message: {len(sent.get('attachments', []))}")
-    if not sent.get("attachments") and not any(
-        e.get("image") for e in sent.get("embeds", [])
-    ):
+    if not sent.get("attachments"):
         raise RuntimeError(f"Discord accepted the post but dropped the image: {r.text[:500]}")
 
 
 def main():
-    updated, pois = grab_map()
+    updated, pois, loot = grab_map()
     print(f"Method.gg says: {updated}")
 
     last = STATE_FILE.read_text().strip() if STATE_FILE.exists() else ""
@@ -164,6 +285,15 @@ def main():
 
     post_to_discord(build_message(updated, pois))
     STATE_FILE.write_text(updated + "\n")
+
+    # Loot tables are a bonus: if Method changes that part of the page,
+    # still count the map as posted instead of failing the whole run.
+    try:
+        embeds = build_loot_embeds(loot, pois)
+        print(f"Loot sections found: {len(loot)}, embeds to post: {len(embeds)}")
+        post_loot(embeds)
+    except Exception as e:  # noqa: BLE001
+        print(f"Loot tables skipped: {e}")
     print("Posted to Discord.")
     return 0
 
