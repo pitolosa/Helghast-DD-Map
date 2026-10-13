@@ -103,23 +103,43 @@ def build_message(updated, pois):
 
 
 def post_to_discord(message):
-    webhook = os.environ["DISCORD_WEBHOOK_URL"]
-    with open(IMAGE_FILE, "rb") as f:
-        r = requests.post(
-            webhook + "?wait=true",
-            data={
-                "payload_json": json.dumps(
-                    {
-                        "username": "Deep Desert Scout",
-                        "content": message,
-                        "allowed_mentions": {"parse": []},
-                    }
-                )
-            },
-            files={"files[0]": ("deep_desert_map.png", f, "image/png")},
-            timeout=60,
-        )
+    webhook = os.environ["DISCORD_WEBHOOK_URL"].strip()
+    image_bytes = IMAGE_FILE.read_bytes()
+    print(f"Screenshot size: {len(image_bytes)} bytes")
+    if len(image_bytes) < 5_000:
+        raise RuntimeError("Screenshot looks empty — not posting.")
+
+    payload = {
+        "username": "Deep Desert Scout",
+        "content": message,
+        "allowed_mentions": {"parse": []},
+        # Declare the file explicitly and show it as the embed image,
+        # so Discord can't drop it.
+        "attachments": [{"id": 0, "filename": "deep_desert_map.png"}],
+        "embeds": [
+            {
+                "title": "Deep Desert — this week's map",
+                "url": MAP_URL,
+                "color": 0xE74C3C,
+                "image": {"url": "attachment://deep_desert_map.png"},
+            }
+        ],
+    }
+    r = requests.post(
+        webhook,
+        params={"wait": "true"},
+        data={"payload_json": json.dumps(payload)},
+        files={"files[0]": ("deep_desert_map.png", image_bytes, "image/png")},
+        timeout=60,
+    )
+    print(f"Discord replied {r.status_code}")
     r.raise_for_status()
+    sent = r.json()
+    print(f"Attachments on posted message: {len(sent.get('attachments', []))}")
+    if not sent.get("attachments") and not any(
+        e.get("image") for e in sent.get("embeds", [])
+    ):
+        raise RuntimeError(f"Discord accepted the post but dropped the image: {r.text[:500]}")
 
 
 def main():
