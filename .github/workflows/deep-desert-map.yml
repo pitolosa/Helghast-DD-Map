@@ -58,7 +58,9 @@ jobs:
         run: |
           git config user.name "deep-desert-bot"
           git config user.email "deep-desert-bot@users.noreply.github.com"
-          git add -A state.json last_posted.txt 2>/dev/null || true
+          # Save the bot's memory (week, base markers, last map id).
+          if [ -f state.json ]; then git add state.json; fi
+          git add -u
           if ! git diff --cached --quiet; then
             git commit -m "Deep Desert map state update"
             git push
