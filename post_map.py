@@ -439,7 +439,9 @@ def post():
     # Markers belong to one map week: start over when a new week begins,
     # then apply any commands that came in.
     markers = list(state.get("markers", []))
-    week_changed = plan.get("week_known") and not same_week(plan["week"], state["week"])
+    # Only wipe markers on a real week change (a known previous week that
+    # differs), never just because no previous week was saved.
+    week_changed = plan.get("week_known") and state["week"] and not same_week(plan["week"], state["week"])
     if week_changed:
         markers = []
     for _, cmd in commands:
