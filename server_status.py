@@ -39,17 +39,59 @@ DOWN = ("🔴", "Offline / maintenance", 0xE74C3C)
 
 # ------------------------------------------------------------------ data
 
-def fetch_world():
-    """Return a dict with the world's status, players and sietches, or None."""
+def page_html_requests():
     try:
-        r = requests.get(WORLD_URL, headers={"User-Agent": UA}, timeout=30)
-        r.raise_for_status()
+        r = requests.get(WORLD_URL, timeout=30, headers={
+            "User-Agent": UA,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+        })
+        print(f"Plain fetch: HTTP {r.status_code}, {len(r.text)} bytes")
+        return r.text if r.status_code == 200 else None
     except Exception as e:  # noqa: BLE001
-        print(f"Couldn't load {WORLD_URL}: {e}")
+        print(f"Plain fetch failed: {e}")
         return None
 
+
+def page_html_browser():
+    """Load the page in a real headless browser (gets past Cloudflare checks)."""
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        print("Playwright not installed; skipping browser fetch.")
+        return None
+    try:
+        with sync_playwright() as p:
+            b = p.chromium.launch()
+            page = b.new_page(user_agent=UA.replace(" HelghastStatus/1.0", ""))
+            page.goto(WORLD_URL, wait_until="domcontentloaded", timeout=60_000)
+            for _ in range(20):  # wait out a "just a moment" check if shown
+                html_text = page.content()
+                if "BattlegroupCurrentActive" in html_text:
+                    break
+                page.wait_for_timeout(1500)
+            b.close()
+            print(f"Browser fetch: {len(html_text)} bytes")
+            return html_text
+    except Exception as e:  # noqa: BLE001
+        print(f"Browser fetch failed: {e}")
+        return None
+
+
+def fetch_world():
+    """Return a dict with the world's status, players and sietches, or None."""
+    for get in (page_html_requests, page_html_browser):
+        raw = get()
+        if raw and "BattlegroupCurrentActive" in raw:
+            w = parse_world(raw)
+            if w:
+                return w
+    return None
+
+
+def parse_world(raw):
     # The page embeds its data as escaped JSON; unescape the quotes.
-    text = r.text.replace('\\"', '"')
+    text = raw.replace('\\"', '"')
 
     # Preferred: decode the "battlegroup" object the page is built from.
     dec = json.JSONDecoder()
@@ -197,11 +239,13 @@ def update_counter(w):
         icon = STATUS_NAMES.get(w["status"], DOWN)[0]
         name = f"{icon} {WORLD}: {w['players']}/{w['capacity']}"
     cur = discord("GET", f"/channels/{COUNTER_CHANNEL_ID}")
+    if cur.status_code != 200:
+        print(f"Can't see the counter channel: {cur.status_code} {cur.text[:300]}")
     if cur.status_code == 200 and cur.json().get("name") == name:
         print("Counter channel already up to date.")
         return
     r = discord("PATCH", f"/channels/{COUNTER_CHANNEL_ID}", json={"name": name})
-    print(f"Counter channel -> {name!r}: {r.status_code}")
+    print(f"Counter channel -> {name!r}: {r.status_code} {'' if r.ok else r.text[:300]}")
 
 
 def main():
