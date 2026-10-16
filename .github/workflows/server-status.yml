@@ -13,7 +13,7 @@ concurrency:
 jobs:
   status:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
 
@@ -21,7 +21,10 @@ jobs:
         with:
           python-version: "3.12"
 
-      - run: pip install requests
+      - name: Install tools
+        run: |
+          pip install requests playwright
+          python -m playwright install --with-deps chromium
 
       - name: Update #server-status
         env:
