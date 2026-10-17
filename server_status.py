@@ -22,6 +22,7 @@ import requests
 
 WORLD = os.environ.get("DUNE_WORLD", "Tagir")
 WORLD_URL = f"https://dunestatus.com/worlds/{WORLD.lower()}"
+HOME_SIETCH = os.environ.get("HOME_SIETCH", "").strip()  # e.g. "Hajar"
 STATUS_CHANNEL_ID = os.environ.get("STATUS_CHANNEL_ID", "").strip()
 COUNTER_CHANNEL_ID = os.environ.get("COUNTER_CHANNEL_ID", "").strip()
 BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "").strip()
@@ -105,7 +106,9 @@ def parse_world(raw):
         servers = [
             {"name": str(s.get("DisplayName", "?")).strip(),
              "players": int(s.get("CurrentConcurrentPlayerCount", 0)),
-             "cap": int(s.get("MaxConcurrentPlayerCapacity", 0))}
+             "cap": int(s.get("MaxConcurrentPlayerCapacity", 0)),
+             "activity": str(s.get("Activity", "")).title(),
+             "online": s.get("ServerStatus") == 20}
             for s in bg.get("ActiveInitialServers", []) or []
         ]
         return {
@@ -157,6 +160,24 @@ def bar(n, total, width=12):
     return "█" * filled + "░" * (width - filled)
 
 
+def norm(name):
+    return name.lower().replace("sietch", "").strip()
+
+
+def home_fields(w):
+    """A highlighted line for our own sietch, if HOME_SIETCH is set."""
+    if not HOME_SIETCH:
+        return []
+    s = next((x for x in w["servers"] if norm(x["name"]) == norm(HOME_SIETCH)), None)
+    if s is None:
+        value = "⚠️ Not listed right now (down or restarting)"
+    else:
+        icon = "🟢" if s.get("online", True) else "🔴"
+        act = f" · {s['activity']}" if s.get("activity") else ""
+        value = f"{icon} **{s['players']} / {s['cap']}** players{act}\n`{bar(s['players'], s['cap'])}`"
+    return [{"name": f"🏠 Our sietch — {HOME_SIETCH}", "value": value, "inline": False}]
+
+
 def build_embed(w):
     now = datetime.now(timezone.utc).isoformat()
     if w is None:
@@ -182,7 +203,7 @@ def build_embed(w):
             f"`{bar(w['players'], w['capacity'])}`\n"
             f"**Activity:** {w['activity'] or '—'} · **Sietches online:** {online_sietches}"
         ),
-        "fields": [{"name": "Busiest sietches", "value": busiest, "inline": False}],
+        "fields": home_fields(w) + [{"name": "Busiest sietches", "value": busiest, "inline": False}],
         "footer": {"text": f"{CARD_MARKER} · data from DuneStatus · updates about every 30 min"},
         "timestamp": now,
     }
