@@ -31,4 +31,5 @@ jobs:
           DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
           DUNE_WORLD: "Tagir"
           STATUS_CHANNEL_ID: "1560693654849454253"
+          HOME_SIETCH: "Hajar"
         run: python server_status.py
