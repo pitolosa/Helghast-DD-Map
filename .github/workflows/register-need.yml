@@ -1,0 +1,36 @@
+name: Register /need command
+
+# Run this once (Actions → Register /need command → Run workflow).
+# It tells Discord about the /need slash command for the Helghast server.
+on:
+  workflow_dispatch:
+
+jobs:
+  register:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Register /need
+        env:
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          GUILD_ID: "1558834458382180393"
+        run: |
+          APP_ID=$(curl -sf -H "Authorization: Bot $DISCORD_BOT_TOKEN" https://discord.com/api/v10/users/@me | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+          echo "Application: $APP_ID"
+          cat > commands.json <<'JSON'
+          [{
+            "name": "need",
+            "description": "Ask the guild for materials — people donate with a button",
+            "type": 1,
+            "options": [
+              {"type": 3, "name": "item", "description": "What you need (anything, e.g. Titanium Ore)", "required": true, "max_length": 80},
+              {"type": 4, "name": "amount", "description": "How many you need in total", "required": true, "min_value": 1, "max_value": 100000000},
+              {"type": 3, "name": "note", "description": "Optional: what it's for, where to drop it", "required": false, "max_length": 300}
+            ]
+          }]
+          JSON
+          code=$(curl -s -o out.json -w "%{http_code}" -X PUT \
+            -H "Authorization: Bot $DISCORD_BOT_TOKEN" -H "Content-Type: application/json" \
+            --data @commands.json \
+            "https://discord.com/api/v10/applications/$APP_ID/guilds/$GUILD_ID/commands")
+          echo "Discord replied $code"; cat out.json; echo
+          test "$code" = "200"
