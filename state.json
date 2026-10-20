@@ -1,11 +1,6 @@
 {
-  "week": "Updated for: 13th October > 20th October",
-  "map_message_id": "1559914710239940709",
+  "week": "Updated for: 20th October > 27th October",
+  "map_message_id": "1561975083482873896",
   "last_command_id": "1559914710239940709",
-  "markers": [
-    {
-      "label": "Helghast Base",
-      "square": "H2"
-    }
-  ]
+  "markers": []
 }
